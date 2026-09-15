@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>レシートスプレッドシート登録</title>
+  <title>レシートOCR・スプレッドシート登録</title>
+  <!-- Tesseract.js v4 読み込み -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Tesseract.js/4.1.1/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; margin: 16px; max-width: 600px; margin: auto; padding: 16px; }
     fieldset { margin-bottom: 16px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; }
@@ -12,40 +14,42 @@
     button { width: 100%; padding: 14px; font-size: 16px; margin-top: 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:disabled { background-color: #ccc; }
     #preview { max-width: 100%; height: auto; margin-top: 8px; display: none; border-radius: 4px; }
+    .loading { color: #d9534f; font-weight: bold; display: none; margin-top: 8px; font-size: 15px; }
     .note { font-size: 12px; color: #666; margin-top: 4px; }
   </style>
 </head>
 <body>
 
-  <h2>レシート登録アプリ</h2>
+  <h2>レシートOCR登録アプリ</h2>
 
   <fieldset>
-    <legend>1. レシート撮影・選択</legend>
+    <legend>1. レシート撮影</legend>
     <input type="file" id="cameraInput" accept="image/*" capture="environment">
-    <div class="note">スマホのカメラが起動するか、写真ライブラリから選択できます</div>
+    <div class="note">レシートを撮影または画像を選択してください</div>
     <img id="preview" alt="レシート画像プレビュー">
+    <div id="loadingText" class="loading">OCR解析中...（初回は言語データのダウンロードに数十秒かかります）</div>
   </fieldset>
 
   <fieldset>
-    <legend>2. 内容の確認・入力</legend>
+    <legend>2. 抽出結果の確認・編集</legend>
     <label for="dateInput">利用日</label>
     <input type="date" id="dateInput">
 
     <label for="storeInput">店名</label>
-    <input type="text" id="storeInput" placeholder="例: セブンイレブン">
+    <input type="text" id="storeInput" placeholder="店名">
 
     <label for="amountInput">金額 (円)</label>
-    <input type="text" id="amountInput" placeholder="例: 1280">
+    <input type="text" id="amountInput" placeholder="金額">
   </fieldset>
 
-  <button id="submitBtn">スプレッドシートへ登録</button>
+  <button id="submitBtn" disabled>スプレッドシートへ登録</button>
 
   <script>
-    // ★ ここにGASの「ウェブアプリのURL」を貼り付けてください
     https://script.google.com/macros/s/AKfycby8fCnlE3fkw1pZtKBlSfw2KoKMDog6-zqGKpuyFmJLtxvk5R46na_MzQBTi_vWamodQQ/exec
 
     const cameraInput = document.getElementById('cameraInput');
     const preview = document.getElementById('preview');
+    const loadingText = document.getElementById('loadingText');
     const dateInput = document.getElementById('dateInput');
     const storeInput = document.getElementById('storeInput');
     const amountInput = document.getElementById('amountInput');
@@ -57,11 +61,12 @@
     const today = new Date().toISOString().split('T')[0];
     dateInput.value = today;
 
-    // 画像選択時の処理
-    cameraInput.addEventListener('change', (e) => {
+    // 画像選択時の処理 ＆ OCR実行
+    cameraInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
+      // プレビュー表示
       const reader = new FileReader();
       reader.onload = (event) => {
         preview.src = event.target.result;
@@ -69,17 +74,89 @@
         uploadedImageUrl = event.target.result;
       };
       reader.readAsDataURL(file);
+
+      // UIをロード中に変更
+      loadingText.style.display = 'block';
+      loadingText.textContent = "OCR解析中...しばらくお待ちください";
+      submitBtn.disabled = true;
+
+      try {
+        // Tesseract.jsで日本語＋英語を認識
+        const worker = await Tesseract.createWorker('jpn+eng');
+        const ret = await worker.recognize(file);
+        const text = ret.data.text;
+        await worker.terminate();
+
+        console.log("OCR読取結果:\n", text); // デバッグ用
+
+        // テキストから日付・店名・金額を抽出
+        parseReceiptText(text);
+
+        loadingText.style.display = 'none';
+        submitBtn.disabled = false;
+      } catch (err) {
+        console.error(err);
+        loadingText.textContent = "OCR解析に失敗しました。手動で入力してください。";
+        submitBtn.disabled = false;
+      }
     });
 
-    // 登録ボタン押下時
+    // レシートテキストから自動抽出するロジック
+    function parseReceiptText(text) {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+      // 1. 日付抽出 (例: 2026/09/15, 2026年9月15日 など)
+      const dateRegex = /(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?/;
+      for (const line of lines) {
+        const match = line.match(dateRegex);
+        if (match) {
+          const y = match[1];
+          const m = match[2].padStart(2, '0');
+          const d = match[3].padStart(2, '0');
+          dateInput.value = `${y}-${m}-${d}`;
+          break;
+        }
+      }
+
+      // 2. 金額抽出 ("合計"や"計"の周辺、または最も大きな数字を狙う)
+      let foundAmount = "";
+      for (let i = 0; i < lines.length; i++) {
+        if (/合計|小計|総額|お支払い|代金|税込/.test(lines[i])) {
+          const numMatch = lines[i].match(/([1-9][0-9,]{2,})/);
+          if (numMatch) {
+            foundAmount = numMatch[1].replace(/,/g, '');
+            break;
+          } else if (i + 1 < lines.length) {
+            const nextMatch = lines[i+1].match(/([1-9][0-9,]{2,})/);
+            if (nextMatch) {
+              foundAmount = nextMatch[1].replace(/,/g, '');
+              break;
+            }
+          }
+        }
+      }
+      // キーワードで見つからない場合は、金額っぽい数値の最大値を取得
+      if (!foundAmount) {
+        const allNums = text.match(/([1-9][0-9,]{2,})/g);
+        if (allNums && allNums.length > 0) {
+          const cleanNums = allNums.map(n => parseInt(n.replace(/,/g, ''), 10));
+          foundAmount = Math.max(...cleanNums);
+        }
+      }
+      if (foundAmount) {
+        amountInput.value = foundAmount;
+      }
+
+      // 3. 店名抽出 (上部にある文字を採用)
+      if (lines.length > 0) {
+        storeInput.value = lines[0];
+      }
+    }
+
+    // スプレッドシート登録ボタン押下時
     submitBtn.addEventListener('click', async () => {
       if (!GAS_WEB_APP_URL || GAS_WEB_APP_URL.includes("YOUR_GAS")) {
         alert("GASのウェブアプリURLが設定されていません。");
-        return;
-      }
-
-      if (!amountInput.value) {
-        alert("金額を入力してください。");
         return;
       }
 
@@ -89,7 +166,7 @@
       const payload = {
         date: dateInput.value,
         store: storeInput.value || "不明な店舗",
-        amount: amountInput.value,
+        amount: amountInput.value || "0",
         imageUrl: uploadedImageUrl.length > 50000 ? "画像データ（容量大のため省略）" : uploadedImageUrl
       };
 
@@ -101,9 +178,9 @@
           body: JSON.stringify(payload)
         });
 
-        alert("スプレッドシートへ正常に登録しました！");
+        alert("スプレッドシートへ登録しました！");
         
-        // フォームリセット
+        // フォームクリア
         cameraInput.value = "";
         preview.style.display = 'none';
         storeInput.value = "";

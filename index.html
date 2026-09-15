@@ -3,18 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>レシートOCRスプレッドシート登録</title>
-  <!-- Tesseract.js読み込み -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+  <title>レシートスプレッドシート登録</title>
   <style>
     body { font-family: sans-serif; margin: 16px; max-width: 600px; margin: auto; padding: 16px; }
-    fieldset { margin-bottom: 16px; padding: 12px; }
-    label { display: block; margin-top: 8px; font-weight: bold; }
-    input[type="text"], input[type="date"] { width: 100%; padding: 8px; box-sizing: border-box; margin-top: 4px; }
-    button { width: 100%; padding: 12px; font-size: 16px; margin-top: 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; }
+    fieldset { margin-bottom: 16px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; }
+    label { display: block; margin-top: 10px; font-weight: bold; }
+    input[type="text"], input[type="date"] { width: 100%; padding: 10px; box-sizing: border-box; margin-top: 4px; font-size: 16px; }
+    button { width: 100%; padding: 14px; font-size: 16px; margin-top: 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:disabled { background-color: #ccc; }
-    #preview { max-width: 100%; height: auto; margin-top: 8px; display: none; }
-    .loading { color: #d9534f; font-weight: bold; display: none; margin-top: 8px; }
+    #preview { max-width: 100%; height: auto; margin-top: 8px; display: none; border-radius: 4px; }
+    .note { font-size: 12px; color: #666; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -22,33 +20,32 @@
   <h2>レシート登録アプリ</h2>
 
   <fieldset>
-    <legend>1. レシート撮影</legend>
+    <legend>1. レシート撮影・選択</legend>
     <input type="file" id="cameraInput" accept="image/*" capture="environment">
+    <div class="note">スマホのカメラが起動するか、写真ライブラリから選択できます</div>
     <img id="preview" alt="レシート画像プレビュー">
-    <div id="loadingText" class="loading">OCR解析中...しばらくお待ちください</div>
   </fieldset>
 
   <fieldset>
-    <legend>2. 抽出結果の確認・編集</legend>
+    <legend>2. 内容の確認・入力</legend>
     <label for="dateInput">利用日</label>
     <input type="date" id="dateInput">
 
     <label for="storeInput">店名</label>
-    <input type="text" id="storeInput">
+    <input type="text" id="storeInput" placeholder="例: セブンイレブン">
 
-    <label for="amountInput">金額</label>
-    <input type="text" id="amountInput">
+    <label for="amountInput">金額 (円)</label>
+    <input type="text" id="amountInput" placeholder="例: 1280">
   </fieldset>
 
-  <button id="submitBtn" disabled>スプレッドシートへ登録</button>
+  <button id="submitBtn">スプレッドシートへ登録</button>
 
   <script>
-    // ★ ここにGASで発行した「ウェブアプリのURL」を貼り付けてください
-    https://script.google.com/macros/s/AKfycbywlrj5oXujnb0WARmw8w-QogfPtAIX0SxbwAd6t8MBo3EpTpwjS7KGi-ahjQKsdzC2dQ/exec
+    // ★ ここにGASの「ウェブアプリのURL」を貼り付けてください
+    https://script.google.com/macros/s/AKfycby8fCnlE3fkw1pZtKBlSfw2KoKMDog6-zqGKpuyFmJLtxvk5R46na_MzQBTi_vWamodQQ/exec
 
     const cameraInput = document.getElementById('cameraInput');
     const preview = document.getElementById('preview');
-    const loadingText = document.getElementById('loadingText');
     const dateInput = document.getElementById('dateInput');
     const storeInput = document.getElementById('storeInput');
     const amountInput = document.getElementById('amountInput');
@@ -56,88 +53,23 @@
 
     let uploadedImageUrl = "";
 
-    cameraInput.addEventListener('change', async (e) => {
+    // 本日の日付をデフォルトセット
+    const today = new Date().toISOString().split('T')[0];
+    dateInput.value = today;
+
+    // 画像選択時の処理
+    cameraInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
-      // プレビュー表示
       const reader = new FileReader();
       reader.onload = (event) => {
         preview.src = event.target.result;
         preview.style.display = 'block';
-        // 画像データURLをそのままE列用、またはプレビュー用として保持
-        uploadedImageUrl = event.target.result; 
+        uploadedImageUrl = event.target.result;
       };
       reader.readAsDataURL(file);
-
-      // OCR実行
-      loadingText.style.display = 'block';
-      submitBtn.disabled = true;
-
-      try {
-        const result = await Tesseract.recognize(file, 'jpn+eng');
-        const text = result.data.text;
-        
-        parseReceiptText(text);
-        submitBtn.disabled = false;
-      } catch (err) {
-        alert('OCR解析に失敗しました: ' + err.message);
-      } finally {
-        loadingText.style.display = 'none';
-      }
     });
-
-    // レシートテキストから日付・店名・金額を簡易抽出する関数
-    function parseReceiptText(text) {
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-      // 1. 日付抽出 (例: 2026/09/15, 2026年9月15日 など)
-      const dateRegex = /(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?/;
-      for (const line of lines) {
-        const match = line.match(dateRegex);
-        if (match) {
-          const y = match[1];
-          const m = match[2].padStart(2, '0');
-          const d = match[3].padStart(2, '0');
-          dateInput.value = `${y}-${m}-${d}`;
-          break;
-        }
-      }
-
-      // 2. 金額抽出 (合計、計、合計金額などの周辺、または最も大きな数値や末尾の数値などを想定)
-      // ここでは「合計」キーワードがある行、または「合 計」などの行を探す
-      let foundAmount = "";
-      for (let i = 0; i < lines.length; i++) {
-        if (/合計|小計|総額|代金/.test(lines[i])) {
-          // 同行または次行から数字を探す
-          const numMatch = lines[i].match(/([1-9][0-9,]{2,})/);
-          if (numMatch) {
-            foundAmount = numMatch[1].replace(/,/g, '');
-            break;
-          } else if (i + 1 < lines.length) {
-            const nextMatch = lines[i+1].match(/([1-9][0-9,]{2,})/);
-            if (nextMatch) {
-              foundAmount = nextMatch[1].replace(/,/g, '');
-              break;
-            }
-          }
-        }
-      }
-      // 見つからなければ金額っぽい最大値を抽出
-      if (!foundAmount) {
-        const allNums = text.match(/([1-9][0-9,]{2,})/g);
-        if (allNums && allNums.length > 0) {
-          const cleanNums = allNums.map(n => parseInt(n.replace(/,/g, ''), 10));
-          foundAmount = Math.max(...cleanNums);
-        }
-      }
-      amountInput.value = foundAmount;
-
-      // 3. 店名抽出 (上部にある文字列を採用する簡易ロジック)
-      if (lines.length > 0) {
-        storeInput.value = lines[0];
-      }
-    }
 
     // 登録ボタン押下時
     submitBtn.addEventListener('click', async () => {
@@ -146,31 +78,39 @@
         return;
       }
 
+      if (!amountInput.value) {
+        alert("金額を入力してください。");
+        return;
+      }
+
       submitBtn.disabled = true;
       submitBtn.textContent = "登録中...";
 
       const payload = {
         date: dateInput.value,
-        store: storeInput.value,
+        store: storeInput.value || "不明な店舗",
         amount: amountInput.value,
-        imageUrl: uploadedImageUrl.length > 50000 ? "画像データ大のため省略" : uploadedImageUrl // データサイズ対策
+        imageUrl: uploadedImageUrl.length > 50000 ? "画像データ（容量大のため省略）" : uploadedImageUrl
       };
 
       try {
         await fetch(GAS_WEB_APP_URL, {
           method: 'POST',
-          mode: 'no-cors', // GASへのCORS回避
+          mode: 'no-cors',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
 
-        alert("スプレッドシートへ登録しました！");
-        // リセット
+        alert("スプレッドシートへ正常に登録しました！");
+        
+        // フォームリセット
         cameraInput.value = "";
         preview.style.display = 'none';
-        dateInput.value = "";
         storeInput.value = "";
         amountInput.value = "";
+        dateInput.value = new Date().toISOString().split('T')[0];
+        uploadedImageUrl = "";
+
       } catch (err) {
         alert("登録に失敗しました: " + err.message);
       } finally {

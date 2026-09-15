@@ -111,11 +111,13 @@
       submitBtn.textContent = "登録中...";
 
       const payload = {
-        date: dateInput.value,
-        store: storeInput.value || "不明な店舗",
-        amount: amountInput.value,
-        imageUrl: uploadedImageUrl.length > 50000 ? "画像データ大" : uploadedImageUrl
-      };
+　　　date: dateInput.value,
+　　　store: storeInput.value || "不明な店舗",
+　　　amount: amountInput.value,
+　　　imageUrl: uploadedImageUrl.length > 50000
+　　　? "画像データ大"
+　　　: uploadedImageUrl
+　　　};
 
       try {
         await fetch(GAS_WEB_APP_URL, {
